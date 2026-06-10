@@ -251,6 +251,8 @@ class LazyGraphDataset(torch.utils.data.Dataset):
             x=torch.from_numpy(x),
             edge_index=edge_index,
             y=torch.from_numpy(y),
+            global_node_id=torch.from_numpy(active_nodes),
+            window_idx=torch.tensor([idx], dtype=torch.long),
             num_nodes=len(active_nodes),
         )
 
