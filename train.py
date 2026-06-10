@@ -30,6 +30,7 @@ CFG = {
     "processed_dir"  : "processed",
     "checkpoint_dir" : "checkpoints",
     "time_window"    : 6,
+    "snapshot_freq"  : "M",     # monthly graph snapshots; use "W" for weekly
 
     # Feature columns — must match data_loader output.
     # Bug #2 fix: include all enrichment columns so the model actually uses
@@ -163,6 +164,113 @@ class FlatGraphDataset(torch.utils.data.Dataset):
         return Data(x=x, edge_index=self.edge_index, y=y, num_nodes=self.N)
 
 
+class LazyGraphDataset(torch.utils.data.Dataset):
+    """
+    Memory-light temporal graph dataset.
+
+    Rows are aggregated into coarse time buckets, then each sliding window
+    returns only the active-node induced subgraph instead of a mostly-empty
+    graph over every global node.
+    """
+
+    def __init__(self, parquet_path, node_df, edge_index, feature_cols, window=6, snapshot_freq="M"):
+        needed_cols = ["time", "node_id", "label", *feature_cols]
+        self.df = pd.read_parquet(parquet_path, columns=needed_cols)
+        self.node_df = node_df
+        self.feature_cols = feature_cols
+        self.window = window
+        self.snapshot_freq = snapshot_freq
+        self.N = len(node_df)
+        self.F = len(feature_cols)
+        self._build_edge_csr(edge_index)
+        self._build_snapshots()
+
+    def _build_edge_csr(self, edge_index):
+        src = edge_index[0].astype(np.int64, copy=False)
+        dst = edge_index[1].astype(np.int64, copy=False)
+        order = np.argsort(src, kind="mergesort")
+        self.edge_dst = dst[order]
+
+        sorted_src = src[order]
+        counts = np.bincount(sorted_src, minlength=self.N)
+        self.edge_ptr = np.zeros(self.N + 1, dtype=np.int64)
+        self.edge_ptr[1:] = np.cumsum(counts)
+
+    def _build_snapshots(self):
+        df = self.df.dropna(subset=["node_id"]).copy()
+        df["node_id"] = df["node_id"].astype(np.int64)
+        df = df[(df["node_id"] >= 0) & (df["node_id"] < self.N)]
+        df[self.feature_cols] = df[self.feature_cols].fillna(0.0)
+        df["label"] = df["label"].fillna(0.0)
+
+        time = pd.to_datetime(df["time"])
+        df["time_bucket"] = time.dt.to_period(self.snapshot_freq).dt.to_timestamp()
+
+        agg_spec = {c: "mean" for c in self.feature_cols}
+        agg_spec["label"] = "max"
+        grouped = (
+            df.groupby(["time_bucket", "node_id"], sort=True)
+              .agg(agg_spec)
+              .reset_index()
+        )
+
+        self.snapshots = []
+        for _, snap in grouped.groupby("time_bucket", sort=True):
+            self.snapshots.append({
+                "node_ids": snap["node_id"].to_numpy(dtype=np.int64),
+                "features": snap[self.feature_cols].to_numpy(dtype=np.float32),
+                "labels": snap["label"].to_numpy(dtype=np.float32),
+            })
+
+    def __len__(self):
+        return max(len(self.snapshots) - self.window, 0)
+
+    def __getitem__(self, idx):
+        from torch_geometric.data import Data
+
+        window_snaps = self.snapshots[idx:idx + self.window]
+        target_snap = self.snapshots[idx + self.window]
+        active_nodes = np.unique(np.concatenate(
+            [s["node_ids"] for s in window_snaps] + [target_snap["node_ids"]]
+        ))
+        local_index = {int(node_id): i for i, node_id in enumerate(active_nodes)}
+
+        x = np.zeros((len(active_nodes), self.window * self.F), dtype=np.float32)
+        y = np.zeros(len(active_nodes), dtype=np.float32)
+
+        for offset, snap in enumerate(window_snaps):
+            cols = slice(offset * self.F, (offset + 1) * self.F)
+            rows = [local_index[int(node_id)] for node_id in snap["node_ids"]]
+            x[rows, cols] = snap["features"]
+
+        target_rows = [local_index[int(node_id)] for node_id in target_snap["node_ids"]]
+        y[target_rows] = target_snap["labels"]
+
+        edge_index = self._induced_edge_index(active_nodes, local_index)
+        return Data(
+            x=torch.from_numpy(x),
+            edge_index=edge_index,
+            y=torch.from_numpy(y),
+            num_nodes=len(active_nodes),
+        )
+
+    def _induced_edge_index(self, active_nodes, local_index):
+        src_local, dst_local = [], []
+        for global_src in active_nodes:
+            start = self.edge_ptr[global_src]
+            end = self.edge_ptr[global_src + 1]
+            local_src = local_index[int(global_src)]
+            for global_dst in self.edge_dst[start:end]:
+                local_dst = local_index.get(int(global_dst))
+                if local_dst is not None:
+                    src_local.append(local_src)
+                    dst_local.append(local_dst)
+
+        if not src_local:
+            return torch.empty((2, 0), dtype=torch.long)
+        return torch.tensor([src_local, dst_local], dtype=torch.long)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Main training function
 # ══════════════════════════════════════════════════════════════════════════════
@@ -191,10 +299,10 @@ def train():
     print(f"Graph: {N} nodes  |  {edge_index.shape[1]} edges  |  features: {in_dim}\n")
 
     # ── 2. Datasets & loaders ────────────────────────────────────────────────
-    print("Building datasets (sliding windows) …")
-    train_ds = FlatGraphDataset(proc/"train.parquet", node_df, edge_index, feature_cols, TW)
-    val_ds   = FlatGraphDataset(proc/"val.parquet",   node_df, edge_index, feature_cols, TW)
-    test_ds  = FlatGraphDataset(proc/"test.parquet",  node_df, edge_index, feature_cols, TW)
+    print(f"Building datasets ({cfg['snapshot_freq']} sliding windows) …")
+    train_ds = LazyGraphDataset(proc/"train.parquet", node_df, edge_index, feature_cols, TW, cfg["snapshot_freq"])
+    val_ds   = LazyGraphDataset(proc/"val.parquet",   node_df, edge_index, feature_cols, TW, cfg["snapshot_freq"])
+    test_ds  = LazyGraphDataset(proc/"test.parquet",  node_df, edge_index, feature_cols, TW, cfg["snapshot_freq"])
 
     print(f"  Train: {len(train_ds)}  |  Val: {len(val_ds)}  |  Test: {len(test_ds)}\n")
 
@@ -238,7 +346,7 @@ def train():
     )
 
     # ── 4. Training loop ─────────────────────────────────────────────────────
-    best_val_f1  = 0.0
+    best_val_f1  = -1.0
     patience_cnt = 0
     history      = []
 
