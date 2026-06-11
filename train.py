@@ -35,12 +35,19 @@ CFG = {
     # Feature columns — must match data_loader output.
     # Bug #2 fix: include all enrichment columns so the model actually uses
     # the compiled_pop / return-period / spectral features data_loader computes.
-    "feature_cols"   : [
+# In train.py CFG, change feature_cols to:
+    "feature_cols": [
         "LAT", "LON", "month", "dayofyear", "hour", "hazard_code",
-        # flood enrichment
         "log_exposed", "exposed_area",
         "rp10_risk", "rp100_risk",
         "mean_MNDWI", "mean_NDVI", "flood_pixel_frac",
+        # ADD THESE:
+        "WMO_WIND",    # wind speed → flood/landslide intensity
+        "WMO_PRES",    # pressure → typhoon strength
+        "STORM_SPEED", # how fast it's moving
+        "DIST2LAND",   # how close the storm is
+        "elevation",   # terrain → landslide risk
+        "slope",       # slope angle → landslide trigger
     ],
 
     # Model

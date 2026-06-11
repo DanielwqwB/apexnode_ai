@@ -16,7 +16,13 @@
     "rp100_risk",
     "mean_MNDWI",
     "mean_NDVI",
-    "flood_pixel_frac"
+    "flood_pixel_frac",
+    "WMO_WIND",
+    "WMO_PRES",
+    "STORM_SPEED",
+    "DIST2LAND",
+    "elevation",
+    "slope"
   ],
   "gcn_hidden": 64,
   "gcn_out": 32,

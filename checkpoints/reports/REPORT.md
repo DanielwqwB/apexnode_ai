@@ -2,12 +2,12 @@
 
 - Split: `test`
 - Threshold: `0.35`
-- Accuracy: `0.8858`
-- F1: `0.2628`
-- Precision: `0.1516`
-- Recall: `0.9845`
-- ROC-AUC: `0.9443`
-- Average precision: `0.1875`
+- Accuracy: `0.8905`
+- F1: `0.2588`
+- Precision: `0.1504`
+- Recall: `0.9249`
+- ROC-AUC: `0.9197`
+- Average precision: `0.1753`
 
 ## Files
 
