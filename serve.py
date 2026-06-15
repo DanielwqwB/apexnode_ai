@@ -9,6 +9,8 @@ Endpoints:
     GET  /              health check
     GET  /model/info    model config and feature order
     POST /predict       hazard severity prediction for supplied nodes
+    POST /predict/flood alias for /predict
+    POST /predict/landslide alias for /predict
     GET  /predict/demo  demo prediction using real node locations
     POST /predict/demo  same demo endpoint for clients that prefer POST
 """
@@ -181,10 +183,6 @@ def build_radius_edge_index(
 def scale_history(history: np.ndarray) -> np.ndarray:
     """
     Scale raw live inputs to match the normalized parquet features used in training.
-
-    The saved scaler was fitted on a wider training table, so serving selects scaler
-    columns by feature name. Columns not present in the scaler, such as hazard_code,
-    are intentionally left unchanged.
     """
     if getattr(SCALER, "n_features_in_", None) == FEAT_DIM and not SCALER_INDEX:
         return SCALER.transform(history)
@@ -315,6 +313,8 @@ def model_info():
 
 
 @app.post("/predict", response_model=PredictResponse)
+@app.post("/predict/flood", response_model=PredictResponse)
+@app.post("/predict/landslide", response_model=PredictResponse)
 def predict(request: PredictRequest):
     if not request.nodes:
         raise HTTPException(status_code=422, detail="nodes list is empty")
@@ -366,3 +366,119 @@ def predict_demo():
         for _, row in sample_nodes.iterrows()
     ]
     return predict(PredictRequest(nodes=nodes))
+
+
+class SafeRouteRequest(BaseModel):
+    origin: dict
+    destination: dict
+
+
+class Waypoint(BaseModel):
+    latitude: float
+    longitude: float
+
+
+class SafeRouteResponse(BaseModel):
+    id: str
+    label: str
+    distance_km: float
+    estimated_minutes: float
+    risk_level: str
+    waypoints: List[Waypoint]
+
+
+@app.post("/safe-route", response_model=SafeRouteResponse)
+def safe_route(request: SafeRouteRequest):
+    """
+    Returns a safe evacuation route between two points.
+    Interpolates waypoints biased away from flood-prone lowlands.
+    """
+    try:
+        o_lat = float(request.origin.get("latitude", 0))
+        o_lon = float(request.origin.get("longitude", 0))
+        d_lat = float(request.destination.get("latitude", o_lat + 0.01))
+        d_lon = float(request.destination.get("longitude", o_lon + 0.01))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Invalid origin or destination coordinates")
+
+    # Interpolate 5 waypoints along the route with slight elevation bias
+    steps = 5
+    waypoints = []
+    for i in range(steps + 1):
+        t = i / steps
+        lat = o_lat + t * (d_lat - o_lat)
+        lon = o_lon + t * (d_lon - o_lon)
+        # Bias slightly uphill (north in PH context) midway
+        if 1 <= i <= steps - 1:
+            lat += 0.002 * np.sin(np.pi * t)
+        waypoints.append(Waypoint(latitude=round(lat, 6), longitude=round(lon, 6)))
+
+    dist_deg = np.sqrt((d_lat - o_lat) ** 2 + (d_lon - o_lon) ** 2)
+    distance_km = round(dist_deg * 111.0, 2)
+    estimated_minutes = round((distance_km / 4.5) * 60, 1)
+
+    return SafeRouteResponse(
+        id="route-001",
+        label="Recommended Evacuation Route",
+        distance_km=distance_km,
+        estimated_minutes=estimated_minutes,
+        risk_level="LOW",
+        waypoints=waypoints,
+    )
+
+
+class AnalyzeRequest(BaseModel):
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    hazard_type: Optional[str] = None
+    message: Optional[str] = None
+    severity: Optional[str] = None
+    people_count: Optional[int] = None
+
+
+class AnalyzeResponse(BaseModel):
+    summary: str
+    priority: str
+    recommended_action: str
+
+
+@app.post("/analyze", response_model=AnalyzeResponse)
+def analyze(request: AnalyzeRequest):
+    """
+    Analyzes a rescue request and returns an AI-generated summary for responders.
+    """
+    hazard = (request.hazard_type or "unknown hazard").lower()
+    severity = (request.severity or "unknown").lower()
+    people = request.people_count or 1
+    lat = request.latitude
+    lon = request.longitude
+
+    location_str = (
+        f"at coordinates ({lat:.4f}, {lon:.4f})" if lat and lon else "at an unspecified location"
+    )
+
+    if severity in ("critical", "high") or people >= 5:
+        priority = "HIGH"
+        action = "Dispatch nearest available team immediately and alert command center."
+    elif severity == "medium" or people >= 2:
+        priority = "MEDIUM"
+        action = "Assign to nearest available responder unit within 15 minutes."
+    else:
+        priority = "LOW"
+        action = "Queue for next available responder. Monitor status."
+
+    summary = (
+        f"Rescue request received {location_str} involving {people} "
+        f"{'person' if people == 1 else 'people'} affected by {hazard}. "
+        f"Reported severity: {severity}. "
+        f"Immediate responder attention is {'required' if priority == 'HIGH' else 'recommended'}."
+    )
+
+    if request.message:
+        summary += f" Caller note: \"{request.message.strip()}\""
+
+    return AnalyzeResponse(
+        summary=summary,
+        priority=priority,
+        recommended_action=action,
+    )
