@@ -86,6 +86,59 @@ TIME_WINDOW = int(CFG["time_window"])
 THRESHOLD = float(CFG["threshold"])
 FEAT_DIM = len(FEATURE_COLS)
 
+# Equity-First: indices of objective threat features (resolved once at startup)
+_EQUITY_FEATURE_INDICES: dict = {
+    col: FEATURE_COLS.index(col)
+    for col in [
+        "rp10_risk", "rp100_risk", "flood_pixel_frac",
+        "WMO_WIND", "WMO_PRES", "elevation", "slope", "mean_MNDWI",
+    ]
+    if col in FEATURE_COLS
+}
+
+# Weights sum to 1.0; log_exposed is intentionally excluded (socioeconomic proxy)
+_EQUITY_WEIGHTS = {
+    "event_prob":       0.35,
+    "severity":         0.20,
+    "flood_pixel_frac": 0.15,
+    "rp10_risk":        0.10,
+    "rp100_risk":       0.10,
+    "elevation_inv":    0.05,  # inverted: lower elevation = higher flood risk
+    "WMO_WIND":         0.05,
+}
+
+
+def _equity_feat(features: List[float], name: str, default: float = 0.0) -> float:
+    idx = _EQUITY_FEATURE_INDICES.get(name)
+    return float(features[idx]) if idx is not None else default
+
+
+def equity_first_score(event_prob: float, severity: float, features: List[float]) -> float:
+    """
+    Equity-First priority score — objective threat indicators only.
+    Deliberately excludes log_exposed (population-value proxy) to prevent
+    socioeconomic bias in rescue ranking.
+    """
+    flood_frac  = _equity_feat(features, "flood_pixel_frac")
+    rp10        = _equity_feat(features, "rp10_risk")
+    rp100       = _equity_feat(features, "rp100_risk")
+    elevation   = _equity_feat(features, "elevation", 1250.0)
+    wind        = _equity_feat(features, "WMO_WIND")
+
+    elevation_inv = 1.0 - min(elevation / 2500.0, 1.0)
+    wind_norm     = min(wind / 120.0, 1.0)
+
+    return round(
+        _EQUITY_WEIGHTS["event_prob"]       * event_prob
+        + _EQUITY_WEIGHTS["severity"]         * min(severity, 1.0)
+        + _EQUITY_WEIGHTS["flood_pixel_frac"] * min(flood_frac, 1.0)
+        + _EQUITY_WEIGHTS["rp10_risk"]        * min(rp10, 1.0)
+        + _EQUITY_WEIGHTS["rp100_risk"]       * min(rp100, 1.0)
+        + _EQUITY_WEIGHTS["elevation_inv"]    * elevation_inv
+        + _EQUITY_WEIGHTS["WMO_WIND"]         * wind_norm,
+        4,
+    )
+
 model = VigilantPathEngine(
     node_feat_dim=FEAT_DIM,
     time_window=TIME_WINDOW,
@@ -143,12 +196,15 @@ class NodeResult(BaseModel):
     event_prob: float
     alert: bool
     alert_level: str
+    equity_score: float
+    rescue_rank: int
 
 
 class PredictResponse(BaseModel):
     threshold: float
     total_nodes: int
     alert_count: int
+    ranking_method: str
     nodes: List[NodeResult]
 
 
@@ -319,6 +375,7 @@ def predict(request: PredictRequest):
     if not request.nodes:
         raise HTTPException(status_code=422, detail="nodes list is empty")
 
+    raw_features = [node.features for node in request.nodes]
     data, lats, lons, node_ids = prepare_graph(request)
 
     with torch.no_grad():
@@ -331,6 +388,7 @@ def predict(request: PredictRequest):
     for idx, node_id in enumerate(node_ids):
         prob = float(event_probs[idx])
         severity = float(severities[idx])
+        eq_score = equity_first_score(prob, severity, raw_features[idx])
         results.append(
             NodeResult(
                 node_id=node_id,
@@ -340,17 +398,34 @@ def predict(request: PredictRequest):
                 event_prob=round(prob, 4),
                 alert=prob >= THRESHOLD,
                 alert_level=alert_level(prob),
+                equity_score=eq_score,
+                rescue_rank=0,  # assigned after sort
             )
         )
 
-    results.sort(key=lambda result: result.event_prob, reverse=True)
+    results.sort(key=lambda r: r.equity_score, reverse=True)
+    for rank, result in enumerate(results, start=1):
+        result.rescue_rank = rank
 
     return PredictResponse(
         threshold=THRESHOLD,
         total_nodes=len(results),
-        alert_count=sum(1 for result in results if result.alert),
+        alert_count=sum(1 for r in results if r.alert),
+        ranking_method="equity_first",
         nodes=results,
     )
+
+
+@app.get("/rescue/priority", response_model=PredictResponse)
+@app.post("/rescue/priority", response_model=PredictResponse)
+def rescue_priority():
+    """
+    Equity-First rescue priority list using demo node data.
+    Nodes are ranked by composite threat severity (flood probability,
+    severity score, flood pixel fraction, return-period risk, elevation,
+    wind speed). Socioeconomic proxies are excluded from ranking.
+    """
+    return predict_demo()
 
 
 @app.get("/predict/demo", response_model=PredictResponse)
