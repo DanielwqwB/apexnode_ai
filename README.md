@@ -14,6 +14,9 @@ An internet-independent disaster-response system powered by a **Spatial-Temporal
   - [VigilantPath ST-GNN](#1-vigilantpath-st-gnn)
   - [Equity-First Prioritization](#2-equity-first-prioritization)
   - [Why This Architecture](#3-why-this-architecture)
+- [Model Performance](#model-performance)
+- [Known Limitations](#known-limitations)
+- [Ethics & Human Oversight](#ethics--human-oversight)
 - [Data Sources](#data-sources)
 - [API Reference](#api-reference)
 - [Quick Start](#quick-start)
@@ -146,6 +149,59 @@ Every node in every API response now carries:
 | **Multi-task head** | Predicting both severity (regression) and event occurrence (classification) jointly improves both tasks through shared representations. |
 | **Positive-class weight = 10** | Flood events are rare in the dataset. Without upweighting, the model would learn to always predict "no flood" and still achieve high accuracy. The weight forces it to treat missed detections as costly. |
 | **`log_exposed` excluded from equity** | Population exposure value correlates with urban wealth. Using it for rescue ranking would systematically deprioritize rural and indigenous communities. |
+
+---
+
+## Model Performance
+
+These are the results from the held-out test set after training on 165,888 records (1,561 positive disaster events — an 83:1 class imbalance).
+
+| Metric | Score | Notes |
+|---|---|---|
+| **ROC-AUC** | **0.9443** | Primary indicator for this use case |
+| **Recall** | **98.45%** | Nearly all real disasters are detected |
+| Accuracy | 88.58% | Overall across all nodes |
+| Precision | 15.16% | ~6 false alerts per genuine event |
+| F1 Score | 0.263 | Reflects intentional recall-over-precision trade-off |
+| Training stopped | Epoch 32 / 40 | Early stopping confirmed efficient convergence |
+
+**Why precision is low by design:** With `pos_weight=10.0` applied to counter the 83:1 class imbalance, the model is deliberately tuned to miss as few real disasters as possible. In a life-safety system, a false alarm that dispatches an unnecessary team is recoverable — a missed disaster is not. ROC-AUC of 0.9443 is the meaningful performance number here, not F1.
+
+---
+
+## Known Limitations
+
+These are honest limitations identified during post-training analysis, documented in our AI-Use & Ethics Report.
+
+**1. Precision trade-off (15.16%)**
+The model flags approximately six safe nodes for every genuine event. Every AI-generated alert must be confirmed by a human responder before resources are dispatched. This is a feature, not a bug — it is why human oversight is mandatory at every alert decision point.
+
+**2. Standalone flood/landslide confidence**
+Flood and landslide events make up only 1,561 of 165,888 training records. The model is most confident on typhoon-driven compound events. Confidence on standalone flood or landslide scenarios without typhoon context is lower. Collecting more standalone event records is a priority for the next training cycle.
+
+**3. Next steps identified**
+- Retrain with `pos_weight=15` and early-stopping patience of 20 epochs
+- Validate against additional standalone flood records from NASA LANCE near-real-time data
+- Expand ASEAN node coverage beyond Philippines, Indonesia, Vietnam, Thailand
+
+---
+
+## Ethics & Human Oversight
+
+SentryMesh is built on the principle that AI amplifies human capacity but never replaces human judgment. The following intervention points are mandatory, not optional:
+
+| Decision point | Human role |
+|---|---|
+| Alert dispatch | Responders must confirm before sending rescue teams |
+| Community Pulse reports | Flagged-uncertain reports require local responder review before influencing the model |
+| Rescue route override | Ground teams can override AI-recommended routes using local knowledge |
+| Alert threshold | Emergency coordinators can adjust the threshold in real time |
+| Federated model updates | National disaster agencies retain full authority over regional model updates |
+| New regional deployment | A human evaluation team must validate Shadow-Mode accuracy against historical records before go-live |
+
+**Equity by design:** The Equity-First algorithm explicitly excludes `log_exposed` (a log of economic exposure value) from rescue ranking. Without this exclusion, the model would implicitly prioritize wealthier, better-instrumented areas. Rescue priority is determined solely by objective threat severity.
+
+**Open-source commitment:** All training data uses Creative Commons or public-domain sources. No personally identifiable information is stored. Community Pulse SMS/USSD reports are opt-in with local-language privacy notices.
 
 ---
 
