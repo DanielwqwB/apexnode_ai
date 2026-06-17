@@ -1,0 +1,9 @@
+Metric,Event Head,SLA Target,SLA Met
+Accuracy,0.8934,≥ 0.9,FAIL
+Precision,0.168,-,-
+Recall,0.9014,≥ 0.85,PASS
+F1-Score,0.2833,≥ 0.85,FAIL
+ROC-AUC,0.9155,≥ 0.9,PASS
+Avg Precision,0.188,-,-
+Severity MSE,0.0197,< 0.05,PASS
+Severity Pearson r,0.3775,≥ 0.70,FAIL
