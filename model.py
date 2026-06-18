@@ -144,19 +144,38 @@ class VigilantPathEngine(nn.Module):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SentryMeshLoss(nn.Module):
-    """Combined severity MSE + binary event BCE (with positive-class weight)."""
+    """Combined severity MSE + Focal Loss for event head.
 
-    def __init__(self, pos_weight: float = 10.0, alpha: float = 0.4):
+    Focal Loss (Lin et al. 2017) down-weights easy negatives and focuses
+    the gradient on hard, misclassified examples — far more effective than
+    pos_weight for imbalanced multi-hazard data.
+    """
+
+    def __init__(self, alpha: float = 0.4,
+                 focal_alpha: float = 0.75, focal_gamma: float = 2.0):
         super().__init__()
-        self.alpha      = alpha   # weight of severity loss vs event loss
-        self.pos_weight = pos_weight
+        self.alpha       = alpha         # severity-vs-event loss balance
+        self.focal_alpha = focal_alpha   # class weight (toward positives)
+        self.focal_gamma = focal_gamma   # focusing parameter
 
-    def forward(self, severity_pred, event_logits, labels):
-        pos_w  = torch.tensor([self.pos_weight], device=labels.device)
-        bce    = F.binary_cross_entropy_with_logits(
-                    event_logits, labels, pos_weight=pos_w)
-        mse    = F.mse_loss(severity_pred, labels)
-        return self.alpha * mse + (1 - self.alpha) * bce
+    def forward(self, severity_pred, event_logits, labels, mask=None):
+        if mask is not None:
+            severity_pred = severity_pred[mask]
+            event_logits  = event_logits[mask]
+            labels        = labels[mask]
+
+        if labels.numel() == 0:
+            return torch.tensor(0.0, device=event_logits.device, requires_grad=True)
+
+        # Focal loss for event head
+        bce = F.binary_cross_entropy_with_logits(
+            event_logits, labels, reduction="none")
+        pt      = torch.exp(-bce)
+        alpha_t = self.focal_alpha * labels + (1 - self.focal_alpha) * (1 - labels)
+        focal   = alpha_t * (1 - pt) ** self.focal_gamma * bce
+
+        mse = F.mse_loss(severity_pred, labels)
+        return self.alpha * mse + (1 - self.alpha) * focal.mean()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

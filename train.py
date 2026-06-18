@@ -51,21 +51,21 @@ CFG = {
     ],
 
     # Model
-    "gcn_hidden"     : 64,
-    "gcn_out"        : 32,
-    "gru_hidden"     : 64,
-    "mlp_hidden"     : 32,
-    "dropout"        : 0.3,
+    "gcn_hidden"     : 128,
+    "gcn_out"        : 64,
+    "gru_hidden"     : 128,
+    "mlp_hidden"     : 64,
+    "dropout"        : 0.4,
 
     # Training
-    "epochs"         : 40,
+    "epochs"         : 80,
     "batch_size"     : 1,       # one graph snapshot per batch
     "lr"             : 1e-3,
     "weight_decay"   : 1e-4,
     "pos_weight"     : 10.0,    # BCEWithLogits positive-class weight
     "loss_alpha"     : 0.4,     # severity loss fraction
-    "patience"       : 8,       # early stopping patience
-    "threshold"      : 0.35,    # event classification threshold
+    "patience"       : 15,      # early stopping patience
+    "threshold"      : 0.35,    # event classification threshold (overridden by auto-tuning)
 
     # Device
     "device"         : "cuda" if torch.cuda.is_available() else "cpu",
@@ -91,6 +91,18 @@ def compute_metrics(labels, preds_prob, threshold=0.35):
         "avg_prec" : average_precision_score(labels, preds_prob)
                      if len(np.unique(labels)) > 1 else 0.0,
     }
+
+
+def find_optimal_threshold(labels, probs):
+    """Search for the threshold that maximizes F1 on the given data."""
+    best_f1, best_thr = 0.0, 0.5
+    for thr in np.arange(0.05, 0.96, 0.01):
+        preds = (probs >= thr).astype(int)
+        f1 = f1_score(labels, preds, zero_division=0)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_thr = float(thr)
+    return best_thr, best_f1
 
 
 def save_checkpoint(model, optimizer, epoch, val_f1, path):
@@ -253,11 +265,15 @@ class LazyGraphDataset(torch.utils.data.Dataset):
         target_rows = [local_index[int(node_id)] for node_id in target_snap["node_ids"]]
         y[target_rows] = target_snap["labels"]
 
+        target_mask = np.zeros(len(active_nodes), dtype=bool)
+        target_mask[target_rows] = True
+
         edge_index = self._induced_edge_index(active_nodes, local_index)
         return Data(
             x=torch.from_numpy(x),
             edge_index=edge_index,
             y=torch.from_numpy(y),
+            target_mask=torch.from_numpy(target_mask),
             global_node_id=torch.from_numpy(active_nodes),
             window_idx=torch.tensor([idx], dtype=torch.long),
             num_nodes=len(active_nodes),
@@ -333,16 +349,15 @@ def train():
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {total_params:,}")
 
-    # Issue #9 fix: compute pos_weight from actual class distribution in training data
     train_labels_series = pd.read_parquet(proc / "train.parquet")["label"]
     n_neg = (train_labels_series == 0).sum()
     n_pos = max((train_labels_series == 1).sum(), 1)
-    dynamic_pos_weight = float(n_neg / n_pos)
-    print(f"Class balance — neg: {n_neg:,}  pos: {n_pos:,}  → pos_weight: {dynamic_pos_weight:.1f}")
+    print(f"Class balance — neg: {n_neg:,}  pos: {n_pos:,}  (ratio {n_neg/n_pos:.1f}:1)")
 
     criterion = SentryMeshLoss(
-        pos_weight = dynamic_pos_weight,
-        alpha      = cfg["loss_alpha"]
+        alpha       = cfg["loss_alpha"],
+        focal_alpha = 0.75,
+        focal_gamma = 2.0,
     ).to(dev)
 
     optimizer = optim.AdamW(
@@ -355,7 +370,7 @@ def train():
     )
 
     # ── 4. Training loop ─────────────────────────────────────────────────────
-    best_val_f1  = -1.0
+    best_val_auc = -1.0
     patience_cnt = 0
     history      = []
 
@@ -369,7 +384,7 @@ def train():
                 batch = batch.to(dev)
                 optimizer.zero_grad()
                 sev, evt = model(batch)
-                loss = criterion(sev, evt, batch.y)
+                loss = criterion(sev, evt, batch.y, mask=batch.target_mask)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
@@ -379,7 +394,7 @@ def train():
             avg_loss = float("nan")
             print(f"[Shadow mode] — weights frozen, evaluating only.")
 
-        # ── Validation ──
+        # ── Validation (only on observed target nodes) ──
         model.eval()
         all_labels, all_probs = [], []
         with torch.no_grad():
@@ -388,8 +403,9 @@ def train():
                 sev, evt = model(batch)
                 probs    = torch.sigmoid(evt).cpu().numpy().flatten()
                 labs     = batch.y.cpu().numpy().flatten()
-                all_probs.extend(probs)
-                all_labels.extend(labs)
+                mask     = batch.target_mask.cpu().numpy().flatten().astype(bool)
+                all_probs.extend(probs[mask])
+                all_labels.extend(labs[mask])
 
         all_labels = np.array(all_labels)
         all_probs  = np.array(all_probs)
@@ -402,30 +418,49 @@ def train():
               f"val_auc={val_m['roc_auc']:.4f}  "
               f"[{elapsed:.1f}s]")
 
-        scheduler.step(val_m["f1"])
+        scheduler.step(val_m["roc_auc"])
         current_lr = optimizer.param_groups[0]["lr"]
         history.append({"epoch": epoch, "loss": avg_loss, "lr": current_lr, **val_m})
 
-        if val_m["f1"] > best_val_f1:
-            best_val_f1  = val_m["f1"]
+        if val_m["roc_auc"] > best_val_auc:
+            best_val_auc = val_m["roc_auc"]
             patience_cnt = 0
             save_checkpoint(
-                model, optimizer, epoch, best_val_f1,
+                model, optimizer, epoch, best_val_auc,
                 f"{cfg['checkpoint_dir']}/best_model.pt"
             )
-            print(f"  ✓ New best val F1: {best_val_f1:.4f}  → checkpoint saved")
+            print(f"  ✓ New best val AUC: {best_val_auc:.4f}  → checkpoint saved")
         else:
             patience_cnt += 1
             if patience_cnt >= cfg["patience"]:
                 print(f"\nEarly stopping at epoch {epoch} (patience={cfg['patience']})")
                 break
 
-    # ── 5. Test evaluation ───────────────────────────────────────────────────
-    print("\n── Test Evaluation ─────────────────────────────────────────────────")
-    ckpt = torch.load(f"{cfg['checkpoint_dir']}/best_model.pt", map_location=dev)
+    # ── 5. Optimal threshold on validation set ─────────────────────────────
+    print("\n── Threshold Optimization (on validation set) ───────────────────────")
+    ckpt = torch.load(f"{cfg['checkpoint_dir']}/best_model.pt", map_location=dev, weights_only=False)
     model.load_state_dict(ckpt["model"])
     model.eval()
 
+    val_labels, val_probs = [], []
+    with torch.no_grad():
+        for batch in val_loader:
+            batch = batch.to(dev)
+            _, evt = model(batch)
+            probs  = torch.sigmoid(evt).cpu().numpy().flatten()
+            labs   = batch.y.cpu().numpy().flatten()
+            mask   = batch.target_mask.cpu().numpy().flatten().astype(bool)
+            val_probs.extend(probs[mask])
+            val_labels.extend(labs[mask])
+    val_labels = np.array(val_labels)
+    val_probs  = np.array(val_probs)
+
+    opt_thr, opt_f1 = find_optimal_threshold(val_labels, val_probs)
+    cfg["threshold"] = opt_thr
+    print(f"  Optimal threshold: {opt_thr:.2f}  (val F1 = {opt_f1:.4f})")
+
+    # ── 6. Test evaluation (only on observed target nodes) ──────────────────
+    print("\n── Test Evaluation ─────────────────────────────────────────────────")
     all_labels, all_probs = [], []
     with torch.no_grad():
         for batch in test_loader:
@@ -433,13 +468,15 @@ def train():
             _, evt = model(batch)
             probs  = torch.sigmoid(evt).cpu().numpy().flatten()
             labs   = batch.y.cpu().numpy().flatten()
-            all_probs.extend(probs)
-            all_labels.extend(labs)
+            mask   = batch.target_mask.cpu().numpy().flatten().astype(bool)
+            all_probs.extend(probs[mask])
+            all_labels.extend(labs[mask])
 
     all_labels = np.array(all_labels)
     all_probs  = np.array(all_probs)
     test_m     = compute_metrics(all_labels, all_probs, cfg["threshold"])
 
+    print(f"  Threshold : {cfg['threshold']:.2f}")
     print(f"  F1        : {test_m['f1']:.4f}")
     print(f"  Precision : {test_m['precision']:.4f}")
     print(f"  Recall    : {test_m['recall']:.4f}")
@@ -452,7 +489,7 @@ def train():
                                 target_names=["No Event", "Event"],
                                 zero_division=0))
 
-    # ── 6. Save run artifacts ─────────────────────────────────────────────────
+    # ── 7. Save run artifacts ─────────────────────────────────────────────────
     with open(f"{cfg['checkpoint_dir']}/history.json", "w") as f:
         json.dump(history, f, indent=2)
     with open(f"{cfg['checkpoint_dir']}/test_metrics.json", "w") as f:
@@ -460,7 +497,7 @@ def train():
     with open(f"{cfg['checkpoint_dir']}/config.json", "w") as f:
         json.dump(cfg, f, indent=2)
 
-    print(f"\n✓ Training complete.  Best val F1: {best_val_f1:.4f}")
+    print(f"\n✓ Training complete.  Best val AUC: {best_val_auc:.4f}")
     print(f"  Artifacts saved to: {cfg['checkpoint_dir']}/")
 
 

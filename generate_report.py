@@ -69,7 +69,7 @@ def load_model(cfg: dict, checkpoint_path: Path, device: torch.device):
         dropout=cfg["dropout"],
     ).to(device)
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model"])
     model.eval()
     return model
