@@ -154,35 +154,61 @@ Every node in every API response now carries:
 
 ## Model Performance
 
-These are the results from the held-out test set after training on 165,888 records (1,561 positive disaster events — an 83:1 class imbalance).
+Held-out test-set results for the three production models. All are leakage-free
+occurrence models (predict *will a hazard occur* from antecedent rainfall +
+terrain + season; see the Anti-Leakage Policy above). Reproduce with
+`train_flood_susceptibility.py`, `train_susceptibility.py`, `train_gnn_v2.py`.
 
-| Metric | Score | Notes |
-|---|---|---|
-| **ROC-AUC** | **0.9443** | Primary indicator for this use case |
-| **Recall** | **98.45%** | Nearly all real disasters are detected |
-| Accuracy | 88.58% | Overall across all nodes |
-| Precision | 15.16% | ~6 false alerts per genuine event |
-| F1 Score | 0.263 | Reflects intentional recall-over-precision trade-off |
-| Training stopped | Epoch 32 / 40 | Early stopping confirmed efficient convergence |
+| Model | Script | ROC-AUC | F1 | Precision | Recall | Negatives |
+|---|---|---|---|---|---|---|
+| **Flood susceptibility** | `train_flood_susceptibility.py` | **0.81** | 0.67 | 0.57 | 0.81 | **hard** (same-location, dry dates) |
+| Flood (random-neg benchmark) | — | 0.89 | 0.75 | 0.79 | 0.71 | random |
+| **Landslide susceptibility** | `train_susceptibility.py` | **0.96** | 0.91 | 0.88 | 0.93 | random* |
+| **VigilantPath ST-GNN** | `train_gnn_v2.py` | **0.96** | 0.86 | 0.88 | 0.85 | flood-hard + landslide-random |
 
-**Why precision is low by design:** With `pos_weight=10.0` applied to counter the 83:1 class imbalance, the model is deliberately tuned to miss as few real disasters as possible. In a life-safety system, a false alarm that dispatches an unnecessary team is recoverable — a missed disaster is not. ROC-AUC of 0.9443 is the meaningful performance number here, not F1.
+**On the flood number (0.81 vs 0.89):** the 0.81 is the *honest* figure. When
+negatives are dry days at the **same** flood-prone locations (so terrain and
+geography are identical between classes), the model still separates them on
+antecedent rainfall alone — proving real skill, not a geographic shortcut. The
+0.89 "random-negative" figure is the standard susceptibility benchmark; the
+~0.08 gap is the geographic-sampling optimism we removed. We report both for
+transparency.
 
 ---
 
 ## Known Limitations
 
-These are honest limitations identified during post-training analysis, documented in our AI-Use & Ethics Report.
+Honest limitations identified during post-training analysis.
 
-**1. Precision trade-off (15.16%)**
-The model flags approximately six safe nodes for every genuine event. Every AI-generated alert must be confirmed by a human responder before resources are dispatched. This is a feature, not a bug — it is why human oversight is mandatory at every alert decision point.
+**1. Negative-sampling optimism (quantified).**
+Susceptibility models are trained against synthetic negatives (no-hazard
+location/date points). Random negatives let a model exploit geography; we
+measured this as ~0.08 ROC-AUC on the flood model and now train it on
+**hard negatives** (same-location, non-hazard dates) for a defensible score.
+*Landslide hard-negatives are pending a NASA POWER re-fetch (the API rate-limited
+the batch); the table marks landslide with `*` and currently uses real
+random negatives.*
 
-**2. Standalone flood/landslide confidence**
-Flood and landslide events make up only 1,561 of 165,888 training records. The model is most confident on typhoon-driven compound events. Confidence on standalone flood or landslide scenarios without typhoon context is lower. Collecting more standalone event records is a priority for the next training cycle.
+**2. Flood precision (0.57 under hard negatives).**
+Distinguishing a flood day from an ordinary wet day at the same location is
+genuinely hard. Every alert must be confirmed by a human responder before
+dispatch — human oversight is mandatory at each decision point.
 
-**3. Next steps identified**
-- Retrain with `pos_weight=15` and early-stopping patience of 20 epochs
-- Validate against additional standalone flood records from NASA LANCE near-real-time data
-- Expand ASEAN node coverage beyond Philippines, Indonesia, Vietnam, Thailand
+**3. Rainfall-driven scope.**
+The models use antecedent rainfall + terrain, not wind/pressure. They predict
+**rain-driven** flooding/landslides; a low-rain, wind/surge-dominated storm is
+out of scope by design.
+
+**4. Next steps.**
+- Complete landslide hard-negative re-fetch and re-report.
+- 5-fold cross-validation for stable headline F1 (test folds are small).
+- Add static predictors (river/coast distance, drainage, land cover).
+
+> **Note on `train.py` / the original ST-GNN:** the earlier snapshot-window GNN
+> reported a ROC-AUC that did not reproduce (its data framing had empty temporal
+> windows and no true negatives, scoring ~0.5 at test). It is superseded by
+> `train_gnn_v2.py`, which reframes the task onto the leakage-free occurrence
+> data above. Use `train_gnn_v2.py`.
 
 ---
 
