@@ -133,6 +133,89 @@ def _load_spectral_features() -> pd.DataFrame:
     return agg
 
 
+# Rainfall feature columns added by _add_rainfall (kept here so all loaders agree)
+RAIN_COLS = ["rain_mean", "rain_max", "rain_sum"]
+_CELL = 0.5   # must match CELL in build_unified_dataset / fetch_rainfall.py
+
+
+def _add_rainfall(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Join monthly NASA POWER rainfall onto an event dataframe by snapping each
+    event's LAT/LON to a 0.5° cell and matching its (year, month).
+
+    Used for FLOOD and LANDSLIDE only — typhoon rainfall is handled via the
+    OpenWeather pipeline, so typhoon rows keep rain_* = 0.
+    Safe no-op (fills 0) if the rainfall parquet hasn't been fetched yet.
+    """
+    path = DATA_ROOT / "rainfall" / "rainfall_monthly.parquet"
+    if not path.exists():
+        print("    [rain] rainfall_monthly.parquet not found — run fetch_rainfall.py "
+              "(filling rain_* with 0 for now)")
+        for c in RAIN_COLS:
+            df[c] = 0.0
+        return df
+
+    rain = pd.read_parquet(path)
+
+    t = pd.to_datetime(df["time"], errors="coerce")
+    df["_year"]     = t.dt.year
+    df["_month"]    = t.dt.month
+    df["_cell_lat"] = (df["LAT"] / _CELL).round() * _CELL
+    df["_cell_lon"] = (df["LON"] / _CELL).round() * _CELL
+
+    merged = df.merge(
+        rain.rename(columns={"cell_lat": "_cell_lat", "cell_lon": "_cell_lon",
+                             "year": "_year", "month": "_month"}),
+        on=["_cell_lat", "_cell_lon", "_year", "_month"], how="left",
+    )
+    for c in RAIN_COLS:
+        merged[c] = merged[c].fillna(0.0)
+    merged.drop(columns=["_year", "_month", "_cell_lat", "_cell_lon"], inplace=True)
+
+    hit = (merged["rain_mean"] > 0).sum()
+    print(f"    [rain] rainfall joined: {hit}/{len(merged)} events enriched")
+    return merged
+
+
+# Per-event antecedent-rainfall + terrain feature columns (joined by event_id)
+ANTECEDENT_COLS = ["rain_1d", "rain_3d", "rain_7d", "rain_30d", "rain_max3", "rain_api"]
+TERRAIN_COLS    = ["elev", "slope_deg", "relief"]
+
+
+def _add_event_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Join per-event antecedent rainfall (data/rainfall/antecedent.parquet) and
+    terrain (data/terrain.parquet) by event_id. These are the strongest physical
+    predictors of floods/landslides — unlike the monthly cell rainfall, they are
+    tied to the specific event and its location.
+    Safe no-op (fills 0) if a parquet hasn't been fetched yet.
+    """
+    ante_path = DATA_ROOT / "rainfall" / "antecedent.parquet"
+    terr_path = DATA_ROOT / "terrain.parquet"
+
+    if ante_path.exists():
+        ante = pd.read_parquet(ante_path)
+        df = df.merge(ante, on="event_id", how="left")
+        hit = df["rain_7d"].notna().sum()
+        print(f"    [ante] antecedent rainfall joined: {hit}/{len(df)} events")
+    else:
+        print("    [ante] antecedent.parquet missing — run fetch_antecedent_rainfall.py")
+    for c in ANTECEDENT_COLS:
+        df[c] = df[c].fillna(0.0) if c in df.columns else 0.0
+
+    if terr_path.exists():
+        terr = pd.read_parquet(terr_path)
+        df = df.merge(terr, on="event_id", how="left")
+        hit = df["slope_deg"].notna().sum()
+        print(f"    [terr] terrain joined: {hit}/{len(df)} events")
+    else:
+        print("    [terr] terrain.parquet missing — run fetch_terrain.py")
+    for c in TERRAIN_COLS:
+        df[c] = df[c].fillna(0.0) if c in df.columns else 0.0
+
+    return df
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 1.  TYPHOON  (IBTrACS-style track data)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -281,6 +364,8 @@ def load_flood() -> pd.DataFrame:
     df["LON"]         = df["long"]
 
     out = df[["event_id", "time", "LAT", "LON", "label", "hazard_type"] + feature_cols].copy()
+    out = _add_rainfall(out)         # monthly cell rainfall
+    out = _add_event_features(out)   # antecedent rainfall + terrain (by event_id)
     print(f"    → {len(out):,} rows  |  events: {out['label'].sum():,}")
     return out
 
@@ -338,6 +423,8 @@ def load_landslide() -> pd.DataFrame:
     df["LON"]         = df["longitude"]
 
     out = df[["event_id", "time", "LAT", "LON", "label", "hazard_type"] + feature_cols].copy()
+    out = _add_rainfall(out)         # monthly cell rainfall
+    out = _add_event_features(out)   # antecedent rainfall + terrain (by event_id)
     print(f"    → {len(out):,} rows  |  events: {out['label'].sum():,}")
     return out
 
@@ -380,44 +467,102 @@ def build_unified_dataset(save_path: str = "processed/"):
     Path(save_path).mkdir(parents=True, exist_ok=True)
 
     print("\n[1/5] Loading raw datasets …")
-    typh_all = pd.concat(
-        [load_typhoon(s) for s in ("train", "val", "test")],
-        ignore_index=True
-    )
-    flood = load_flood()
-    land  = load_landslide()
+    frames = []
+    # Typhoon is optional — skip cleanly if the CSVs aren't present
+    # (we exclude it from rainfall/terrain work; OpenWeather handles it live).
+    try:
+        typh_all = pd.concat(
+            [load_typhoon(s) for s in ("train", "val", "test")],
+            ignore_index=True
+        )
+        frames.append(typh_all)
+    except FileNotFoundError:
+        print("  typhoon CSVs not found — skipping typhoon (flood + landslide only)")
+
+    frames.append(load_flood())
+    frames.append(load_landslide())
 
     # ── Align to common schema ──
     common_features = ["LAT", "LON", "month", "dayofyear", "hour"]
-    for df in (typh_all, flood, land):
+    for df in frames:
         for c in common_features:
             if c not in df.columns:
                 df[c] = 0.0
 
     hazard_enc = {"typhoon": 0, "flood": 1, "landslide": 2}
-    for df in (typh_all, flood, land):
+    for df in frames:
         df["hazard_code"] = df["hazard_type"].map(hazard_enc)
 
     print("\n[2/5] Merging datasets …")
-    combined = pd.concat([typh_all, flood, land], ignore_index=True, sort=False)
+    combined = pd.concat(frames, ignore_index=True, sort=False)
     combined.fillna(0.0, inplace=True)
     combined.sort_values("time", inplace=True)
     combined.reset_index(drop=True, inplace=True)
+
+    # ── Cross-hazard engineered features (non-zero for all rows) ──
+    combined["lat_sin"] = np.sin(np.radians(combined["LAT"]))
+    combined["lon_sin"] = np.sin(np.radians(combined["LON"]))
+    combined["lat_cos"] = np.cos(np.radians(combined["LAT"]))
+    combined["lon_cos"] = np.cos(np.radians(combined["LON"]))
+    combined["month_sin"] = np.sin(2 * np.pi * combined["month"] / 12)
+    combined["month_cos"] = np.cos(2 * np.pi * combined["month"] / 12)
+    combined["day_sin"] = np.sin(2 * np.pi * combined["dayofyear"] / 365)
+    combined["day_cos"] = np.cos(2 * np.pi * combined["dayofyear"] / 365)
+
     print(f"  Total rows: {len(combined):,}")
     print(f"  Label distribution:\n{combined['label'].value_counts().to_string()}")
 
     print("\n[3/5] Building spatial graph …")
-    node_df = combined[["LAT", "LON"]].drop_duplicates().reset_index(drop=True)
+    # ── Snap exact coordinates to grid CELLS so nodes recur over time ──
+    # Each event used to create a brand-new node (median 2 events/node → no
+    # temporal pattern to learn). Snapping to 0.5° cells turns nodes into
+    # persistent geographic regions (median ~29 events/node), which is what
+    # the ST-GNN actually needs and matches the "settlement" node concept.
+    CELL = 0.5  # degrees (~55 km); lower = finer regions, fewer events/node
+    combined["cell_lat"] = (combined["LAT"] / CELL).round() * CELL
+    combined["cell_lon"] = (combined["LON"] / CELL).round() * CELL
+
+    node_df = combined[["cell_lat", "cell_lon"]].drop_duplicates().reset_index(drop=True)
     node_df["node_id"] = node_df.index
-    combined = combined.merge(node_df, on=["LAT", "LON"], how="left")
+    node_df["LAT"] = node_df["cell_lat"]   # node coords = cell center
+    node_df["LON"] = node_df["cell_lon"]
+    combined = combined.merge(
+        node_df[["cell_lat", "cell_lon", "node_id"]],
+        on=["cell_lat", "cell_lon"], how="left"
+    )
 
     edge_index = build_spatial_graph(node_df, radius_deg=2.5, max_neighbors=16)
-    print(f"  Nodes: {len(node_df):,}  |  Edges: {edge_index.shape[1]:,}")
+    print(f"  Nodes: {len(node_df):,}  |  Edges: {edge_index.shape[1]:,}  "
+          f"(grid cells @ {CELL}°)")
 
     # Bug #1 fix: assert no NaN node_ids (would silently stack events onto node 0)
     assert combined["node_id"].notna().all(), \
         f"node_id merge produced NaNs for {combined['node_id'].isna().sum()} rows — " \
         "check for LAT/LON mismatches between combined and node_df"
+
+    # ── Node-level historical features (vary between nodes, non-zero) ──
+    print("  Computing node-level historical features …")
+    combined = combined.sort_values("time").reset_index(drop=True)
+
+    # node_degree: how connected this location is in the spatial graph
+    degree = np.bincount(edge_index[0], minlength=len(node_df)).astype(np.float32)
+    node_df["node_degree"] = degree
+    combined = combined.merge(node_df[["node_id", "node_degree"]], on="node_id", how="left")
+
+    # node_hist_count: how many past events occurred at this node (excludes current row)
+    combined["node_hist_count"] = combined.groupby("node_id").cumcount().astype(np.float32)
+
+    # node_hist_pos_rate: fraction of past events at this node that were positive
+    combined["_cum_pos"] = combined.groupby("node_id")["label"].transform(
+        lambda x: x.shift(1, fill_value=0).cumsum()
+    )
+    combined["node_hist_pos_rate"] = (
+        combined["_cum_pos"] / combined["node_hist_count"].clip(lower=1)
+    ).astype(np.float32)
+    combined.drop(columns=["_cum_pos"], inplace=True)
+
+    print(f"    node_degree range: {combined['node_degree'].min():.0f}–{combined['node_degree'].max():.0f}")
+    print(f"    node_hist_count range: {combined['node_hist_count'].min():.0f}–{combined['node_hist_count'].max():.0f}")
 
     print("\n[4/5] Normalising features …")
     scale_cols = [
@@ -444,10 +589,27 @@ def build_unified_dataset(save_path: str = "processed/"):
         pickle.dump(scaler, f)
 
     # Time-ordered splits — no leakage
+    train_df = combined.iloc[:train_end]
+    val_df   = combined.iloc[train_end:val_end]
+    test_df  = combined.iloc[val_end:]
+
+    # ── Oversample minority class in training set ──
+    pos = train_df[train_df["label"] == 1]
+    neg = train_df[train_df["label"] == 0]
+    if len(pos) > 0 and len(neg) > len(pos):
+        oversample_ratio = min(len(neg) // len(pos), 5)
+        if oversample_ratio > 1:
+            pos_upsampled = pos.sample(n=len(pos) * oversample_ratio,
+                                       replace=True, random_state=42)
+            train_df = pd.concat([neg, pos_upsampled], ignore_index=True)
+            train_df = train_df.sort_values("time").reset_index(drop=True)
+            print(f"  [oversample] positives upsampled {oversample_ratio}x "
+                  f"→ {len(train_df):,} training rows")
+
     splits = {
-        "train": combined.iloc[:train_end],
-        "val":   combined.iloc[train_end:val_end],
-        "test":  combined.iloc[val_end:],
+        "train": train_df,
+        "val":   val_df,
+        "test":  test_df,
     }
     for name, df in splits.items():
         df.to_parquet(f"{save_path}/{name}.parquet", index=False)

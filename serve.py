@@ -16,6 +16,7 @@ Endpoints:
 """
 
 import datetime as dt
+import math
 import json
 import pickle
 import sys
@@ -87,14 +88,7 @@ THRESHOLD = float(CFG["threshold"])
 FEAT_DIM = len(FEATURE_COLS)
 
 # Equity-First: indices of objective threat features (resolved once at startup)
-_EQUITY_FEATURE_INDICES: dict = {
-    col: FEATURE_COLS.index(col)
-    for col in [
-        "rp10_risk", "rp100_risk", "flood_pixel_frac",
-        "WMO_WIND", "WMO_PRES", "elevation", "slope", "mean_MNDWI",
-    ]
-    if col in FEATURE_COLS
-}
+_EQUITY_FEATURE_INDICES: dict = {col: idx for idx, col in enumerate(FEATURE_COLS)}
 
 # Weights sum to 1.0; log_exposed is intentionally excluded (socioeconomic proxy)
 _EQUITY_WEIGHTS = {
@@ -104,13 +98,16 @@ _EQUITY_WEIGHTS = {
     "rp10_risk":        0.10,
     "rp100_risk":       0.10,
     "elevation_inv":    0.05,  # inverted: lower elevation = higher flood risk
-    "WMO_WIND":         0.05,
+    "rainfall":         0.05,
 }
 
 
-def _equity_feat(features: List[float], name: str, default: float = 0.0) -> float:
-    idx = _EQUITY_FEATURE_INDICES.get(name)
-    return float(features[idx]) if idx is not None else default
+def _equity_feat(features: List[float], names: List[str], default: float = 0.0) -> float:
+    for name in names:
+        idx = _EQUITY_FEATURE_INDICES.get(name)
+        if idx is not None:
+            return float(features[idx])
+    return default
 
 
 def equity_first_score(event_prob: float, severity: float, features: List[float]) -> float:
@@ -119,14 +116,20 @@ def equity_first_score(event_prob: float, severity: float, features: List[float]
     Deliberately excludes log_exposed (population-value proxy) to prevent
     socioeconomic bias in rescue ranking.
     """
-    flood_frac  = _equity_feat(features, "flood_pixel_frac")
-    rp10        = _equity_feat(features, "rp10_risk")
-    rp100       = _equity_feat(features, "rp100_risk")
-    elevation   = _equity_feat(features, "elevation", 1250.0)
-    wind        = _equity_feat(features, "WMO_WIND")
+    flood_frac = _equity_feat(features, ["flood_pixel_frac"])
+    rp10 = _equity_feat(features, ["rp10_risk"])
+    rp100 = _equity_feat(features, ["rp100_risk"])
+    elevation = _equity_feat(features, ["elev", "elevation"], 1250.0)
+    rainfall = max(
+        _equity_feat(features, ["rain_max"]),
+        _equity_feat(features, ["rain_1d"]),
+        _equity_feat(features, ["rain_3d"]),
+        _equity_feat(features, ["rain_7d"]),
+        _equity_feat(features, ["rain_api"]),
+    )
 
     elevation_inv = 1.0 - min(elevation / 2500.0, 1.0)
-    wind_norm     = min(wind / 120.0, 1.0)
+    rainfall_norm = min(rainfall / 300.0, 1.0)
 
     return round(
         _EQUITY_WEIGHTS["event_prob"]       * event_prob
@@ -135,7 +138,7 @@ def equity_first_score(event_prob: float, severity: float, features: List[float]
         + _EQUITY_WEIGHTS["rp10_risk"]        * min(rp10, 1.0)
         + _EQUITY_WEIGHTS["rp100_risk"]       * min(rp100, 1.0)
         + _EQUITY_WEIGHTS["elevation_inv"]    * elevation_inv
-        + _EQUITY_WEIGHTS["WMO_WIND"]         * wind_norm,
+        + _EQUITY_WEIGHTS["rainfall"]         * rainfall_norm,
         4,
     )
 
@@ -313,11 +316,17 @@ def prepare_graph(request: PredictRequest):
 
 
 def demo_features(row: pd.Series, now: dt.datetime) -> List[float]:
+    lat = float(row["LAT"])
+    lon = float(row["LON"])
+    dayofyear = float(now.timetuple().tm_yday)
+    month_angle = 2.0 * math.pi * now.month / 12.0
+    day_angle = 2.0 * math.pi * dayofyear / 366.0
+
     values = {
-        "LAT": float(row["LAT"]),
-        "LON": float(row["LON"]),
+        "LAT": lat,
+        "LON": lon,
         "month": float(now.month),
-        "dayofyear": float(now.timetuple().tm_yday),
+        "dayofyear": dayofyear,
         "hour": float(now.hour),
         "hazard_code": float(np.random.choice([0, 1, 2])),
         "log_exposed": float(np.random.uniform(5, 12)),
@@ -327,12 +336,29 @@ def demo_features(row: pd.Series, now: dt.datetime) -> List[float]:
         "mean_MNDWI": float(np.random.uniform(-0.3, 0.6)),
         "mean_NDVI": float(np.random.uniform(0.1, 0.8)),
         "flood_pixel_frac": float(np.random.uniform(0.0, 0.4)),
-        "WMO_WIND": float(np.random.uniform(35, 120)),
-        "WMO_PRES": float(np.random.uniform(900, 1010)),
-        "STORM_SPEED": float(np.random.uniform(0, 40)),
-        "DIST2LAND": float(np.random.uniform(0, 1000)),
-        "elevation": float(np.random.uniform(0, 2500)),
-        "slope": float(np.random.uniform(0, 45)),
+        "lat_sin": float(np.sin(np.radians(lat))),
+        "lon_sin": float(np.sin(np.radians(lon))),
+        "lat_cos": float(np.cos(np.radians(lat))),
+        "lon_cos": float(np.cos(np.radians(lon))),
+        "month_sin": float(np.sin(month_angle)),
+        "month_cos": float(np.cos(month_angle)),
+        "day_sin": float(np.sin(day_angle)),
+        "day_cos": float(np.cos(day_angle)),
+        "node_degree": float(row.get("node_degree", 0.0)),
+        "node_hist_count": float(np.random.uniform(0, 20)),
+        "node_hist_pos_rate": float(np.random.uniform(0.0, 0.5)),
+        "rain_mean": float(np.random.uniform(0, 80)),
+        "rain_max": float(np.random.uniform(0, 240)),
+        "rain_sum": float(np.random.uniform(0, 500)),
+        "rain_1d": float(np.random.uniform(0, 180)),
+        "rain_3d": float(np.random.uniform(0, 300)),
+        "rain_7d": float(np.random.uniform(0, 500)),
+        "rain_30d": float(np.random.uniform(0, 900)),
+        "rain_max3": float(np.random.uniform(0, 220)),
+        "rain_api": float(np.random.uniform(0, 180)),
+        "elev": float(np.random.uniform(0, 2500)),
+        "slope_deg": float(np.random.uniform(0, 45)),
+        "relief": float(np.random.uniform(0, 1500)),
     }
     return [values.get(col, 0.0) for col in FEATURE_COLS]
 

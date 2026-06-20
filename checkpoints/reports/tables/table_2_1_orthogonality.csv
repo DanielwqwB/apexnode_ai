@@ -1,0 +1,5 @@
+Wealth Proxy,Max |Pearson r|,Mean |Pearson r|,|r| < 0.30 Pass,Max MI,Mean MI,MI < 0.05 Pass,VIF,VIF < 10 Pass
+log_exposed,0.866,,FAIL (0.866),0.2206,0.0291,FAIL (0.221),4.64,PASS
+exposed_area,0.8721,,FAIL (0.872),0.2206,0.0291,FAIL (0.221),4.78,PASS
+rp10_risk,0.8437,,FAIL (0.844),0.2976,0.0424,FAIL (0.298),3.81,PASS
+rp100_risk,0.8365,,FAIL (0.836),0.2976,0.0424,FAIL (0.298),3.72,PASS

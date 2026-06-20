@@ -514,7 +514,7 @@ def figure_2_1_shap_beeswarm(model, loader, device, cfg):
     feat_names = feat_names[:actual_cols]
 
     attributions = np.zeros((n_samples, actual_cols), dtype=np.float32)
-    model.train()
+    model.eval()  # eval mode: BatchNorm uses running stats (works for single-node inputs)
     for i in range(n_samples):
         xi = torch.tensor(X_sample[i:i+1], dtype=torch.float32, requires_grad=True).to(device)
         ei = torch.zeros(2, 0, dtype=torch.long).to(device)
@@ -718,8 +718,9 @@ def table_2_1_orthogonality():
     wealth_proxies = ["log_exposed", "exposed_area", "rp10_risk", "rp100_risk"]
     model_features = ["LAT", "LON", "month", "dayofyear", "hour", "hazard_code",
                        "mean_MNDWI", "mean_NDVI", "flood_pixel_frac",
-                       "WMO_WIND", "WMO_PRES", "STORM_SPEED", "DIST2LAND",
-                       "elevation", "slope"]
+                       "rain_1d", "rain_3d", "rain_7d", "rain_30d", "rain_max3", "rain_api",
+                       "elev", "slope_deg", "relief",
+                       "rain_mean", "rain_max", "rain_sum"]
 
     available_proxies = [c for c in wealth_proxies if c in test_df.columns]
     available_model = [c for c in model_features if c in test_df.columns]

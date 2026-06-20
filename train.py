@@ -29,8 +29,8 @@ CFG = {
     # Data
     "processed_dir"  : "processed",
     "checkpoint_dir" : "checkpoints",
-    "time_window"    : 6,
-    "snapshot_freq"  : "M",     # monthly graph snapshots; use "W" for weekly
+    "time_window"    : 4,
+    "snapshot_freq"  : "W",     # weekly graph snapshots for more training samples
 
     # Feature columns — must match data_loader output.
     # Bug #2 fix: include all enrichment columns so the model actually uses
@@ -41,13 +41,17 @@ CFG = {
         "log_exposed", "exposed_area",
         "rp10_risk", "rp100_risk",
         "mean_MNDWI", "mean_NDVI", "flood_pixel_frac",
-        # ADD THESE:
-        "WMO_WIND",    # wind speed → flood/landslide intensity
-        "WMO_PRES",    # pressure → typhoon strength
-        "STORM_SPEED", # how fast it's moving
-        "DIST2LAND",   # how close the storm is
-        "elevation",   # terrain → landslide risk
-        "slope",       # slope angle → landslide trigger
+        # Cyclical encodings (non-zero for all hazard types)
+        "lat_sin", "lon_sin", "lat_cos", "lon_cos",
+        "month_sin", "month_cos", "day_sin", "day_cos",
+        # Node-level historical features (vary between nodes)
+        "node_degree", "node_hist_count", "node_hist_pos_rate",
+        # Monthly cell rainfall (NASA POWER)
+        "rain_mean", "rain_max", "rain_sum",
+        # Per-event antecedent rainfall — the physical trigger (NASA POWER)
+        "rain_1d", "rain_3d", "rain_7d", "rain_30d", "rain_max3", "rain_api",
+        # Per-event terrain (Open-Meteo) — landslide driver
+        "elev", "slope_deg", "relief",
     ],
 
     # Model
@@ -55,16 +59,16 @@ CFG = {
     "gcn_out"        : 64,
     "gru_hidden"     : 128,
     "mlp_hidden"     : 64,
-    "dropout"        : 0.4,
+    "dropout"        : 0.3,
 
     # Training
-    "epochs"         : 80,
+    "epochs"         : 150,
     "batch_size"     : 1,       # one graph snapshot per batch
-    "lr"             : 1e-3,
+    "lr"             : 2e-3,
     "weight_decay"   : 1e-4,
     "pos_weight"     : 10.0,    # BCEWithLogits positive-class weight
     "loss_alpha"     : 0.4,     # severity loss fraction
-    "patience"       : 15,      # early stopping patience
+    "patience"       : 25,      # early stopping patience
     "threshold"      : 0.35,    # event classification threshold (overridden by auto-tuning)
 
     # Device
@@ -357,7 +361,7 @@ def train():
     criterion = SentryMeshLoss(
         alpha       = cfg["loss_alpha"],
         focal_alpha = 0.75,
-        focal_gamma = 2.0,
+        focal_gamma = 3.0,
     ).to(dev)
 
     optimizer = optim.AdamW(
@@ -365,12 +369,12 @@ def train():
         lr           = cfg["lr"],
         weight_decay = cfg["weight_decay"]
     )
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", patience=3, factor=0.5
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=20, T_mult=2, eta_min=1e-5
     )
 
     # ── 4. Training loop ─────────────────────────────────────────────────────
-    best_val_auc = -1.0
+    best_val_f1  = -1.0
     patience_cnt = 0
     history      = []
 
@@ -418,18 +422,18 @@ def train():
               f"val_auc={val_m['roc_auc']:.4f}  "
               f"[{elapsed:.1f}s]")
 
-        scheduler.step(val_m["roc_auc"])
+        scheduler.step(epoch)
         current_lr = optimizer.param_groups[0]["lr"]
         history.append({"epoch": epoch, "loss": avg_loss, "lr": current_lr, **val_m})
 
-        if val_m["roc_auc"] > best_val_auc:
-            best_val_auc = val_m["roc_auc"]
+        if val_m["f1"] > best_val_f1:
+            best_val_f1 = val_m["f1"]
             patience_cnt = 0
             save_checkpoint(
-                model, optimizer, epoch, best_val_auc,
+                model, optimizer, epoch, best_val_f1,
                 f"{cfg['checkpoint_dir']}/best_model.pt"
             )
-            print(f"  ✓ New best val AUC: {best_val_auc:.4f}  → checkpoint saved")
+            print(f"  ✓ New best val F1: {best_val_f1:.4f}  → checkpoint saved")
         else:
             patience_cnt += 1
             if patience_cnt >= cfg["patience"]:
@@ -497,7 +501,7 @@ def train():
     with open(f"{cfg['checkpoint_dir']}/config.json", "w") as f:
         json.dump(cfg, f, indent=2)
 
-    print(f"\n✓ Training complete.  Best val AUC: {best_val_auc:.4f}")
+    print(f"\n✓ Training complete.  Best val F1: {best_val_f1:.4f}")
     print(f"  Artifacts saved to: {cfg['checkpoint_dir']}/")
 
 

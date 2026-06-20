@@ -22,19 +22,23 @@ import numpy as np
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SpatialEncoder(nn.Module):
-    """Two-layer GCN for spatial message passing."""
+    """Two-layer GAT with BatchNorm and residual connection."""
 
     def __init__(self, in_dim: int, hidden: int, out_dim: int, dropout: float = 0.3):
         super().__init__()
-        self.conv1   = GCNConv(in_dim,  hidden)
-        self.conv2   = GCNConv(hidden,  out_dim)
+        self.conv1   = GATConv(in_dim, hidden, heads=4, concat=False)
+        self.bn1     = nn.BatchNorm1d(hidden)
+        self.conv2   = GATConv(hidden, out_dim, heads=4, concat=False)
+        self.bn2     = nn.BatchNorm1d(out_dim)
         self.dropout = dropout
+        self.skip    = nn.Linear(in_dim, out_dim) if in_dim != out_dim else nn.Identity()
 
     def forward(self, x, edge_index):
-        x = F.relu(self.conv1(x, edge_index))
+        residual = self.skip(x)
+        x = self.bn1(F.relu(self.conv1(x, edge_index)))
         x = F.dropout(x, p=self.dropout, training=self.training)
-        x = F.relu(self.conv2(x, edge_index))
-        return x
+        x = self.bn2(F.relu(self.conv2(x, edge_index)))
+        return x + residual
 
 
 class TemporalEncoder(nn.Module):

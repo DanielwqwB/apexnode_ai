@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+
+.python-version
+tempCodeRunnerFile.py
+*.log
+
+data/osm/*.pbf
+data/rainfall/tiles/
