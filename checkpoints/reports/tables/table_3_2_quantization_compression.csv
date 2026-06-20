@@ -1,5 +1,0 @@
-Configuration,Bits,Model Size (MB),Compression Ratio,Memory Reduction (%),Est. Latency (ms),Accuracy Loss (%)
-FP32 (Baseline),32,1.167,1.0×,0.0,13.56,0.0
-FP16 (Half Prec.),16,0.583,2.0×,45.0,8.81,1.2
-INT8 (Dynamic Quant.),8,0.292,4.0×,70.0,5.42,1.9
-INT4 (Weight-Only),4,0.146,8.0×,82.0,4.07,2.2

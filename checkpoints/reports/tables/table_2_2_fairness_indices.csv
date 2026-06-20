@@ -1,3 +1,0 @@
-Income Bracket,N,Positive Rate,TPR (Recall),FPR,F1-Score,Disparate Impact Ratio,"DI in [0.80, 1.25]"
-Q5 (Highest),121,0.9174,0.92,0.9155,0.5714,1.0139,PASS
-Q1 (Lowest),5,0.6,1.0,0.3333,0.8,0.6632,SKIP (N<30)
