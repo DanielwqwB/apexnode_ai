@@ -172,6 +172,51 @@ print(f"Node registry loaded ({len(NODES_DF):,} nodes)")
 
 METRICS = load_json(METRICS_PATH, load_json(TEST_METRICS_PATH, {}))
 
+DATASET_SOURCES = [
+    {
+        "name": "NASA EarthData",
+        "display_name": "NASA EarthData 1,136,000+",
+        "records": "1,136,000+",
+        "path": "data/rainfall/rainfall_monthly.parquet",
+        "used_for": "Rainfall and antecedent precipitation features",
+    },
+    {
+        "name": "NASA Global Landslide Catalog",
+        "display_name": "NASA Global Landslide Catalog 11,000+",
+        "records": "11,000+",
+        "path": "data/landslide/",
+        "used_for": "Landslide events and locations",
+    },
+    {
+        "name": "Global Flood Database",
+        "display_name": "Global Flood Database 900+",
+        "records": "900+",
+        "path": "data/gfd_qcdatabase_2019_08_01.csv",
+        "used_for": "Flood events, severity labels, satellite indices",
+    },
+    {
+        "name": "GFD Validation Points",
+        "display_name": "GFD Validation Points 33,000+",
+        "records": "33,000+",
+        "path": "data/gfd_validation_points_2018_12_17.csv",
+        "used_for": "Flood-water validation features",
+    },
+    {
+        "name": "GHSL Population Exposure",
+        "display_name": "GHSL Population Exposure 4,800+",
+        "records": "4,800+",
+        "path": "data/compiled_pop_ghsl_ts_2019_08_04.csv",
+        "used_for": "Exposure features excluded from Equity-First ranking",
+    },
+    {
+        "name": "Aqueduct Country Risk",
+        "display_name": "Aqueduct Country Risk 250+",
+        "records": "250+",
+        "path": "data/aqueductcountrydata.csv",
+        "used_for": "Baseline country-level water risk",
+    },
+]
+
 
 class NodeReading(BaseModel):
     """
@@ -387,6 +432,8 @@ def model_info():
         "test_f1": METRICS.get("f1"),
         "test_roc_auc": METRICS.get("roc_auc"),
         "test_recall": METRICS.get("recall"),
+        "datasets": DATASET_SOURCES,
+        "dataset_names": [source["display_name"] for source in DATASET_SOURCES],
         "input_format": (
             "Send raw feature values in feature_cols order. The API scales named "
             "numeric features before inference."

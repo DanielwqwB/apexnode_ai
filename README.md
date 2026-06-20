@@ -207,15 +207,16 @@ SentryMesh is built on the principle that AI amplifies human capacity but never 
 
 ## Data Sources
 
-| Dataset | Source | Used for |
+| Dataset Name | Source | Used for |
 |---|---|---|
-| Global Flood Database (GFD) | Dartmouth Flood Observatory | Flood events, severity labels, satellite indices |
+| NASA EarthData 1,136,000+ | `data/rainfall/rainfall_monthly.parquet` | Rainfall and antecedent precipitation features |
+| NASA Global Landslide Catalog 11,000+ | `data/landslide/` | Landslide events and locations |
+| Global Flood Database 900+ | Dartmouth Flood Observatory | Flood events, severity labels, satellite indices |
+| GFD Validation Points 33,000+ | `gfd_validation_points_2018_12_17.csv` | `mean_MNDWI`, `mean_NDVI`, `flood_pixel_frac` |
+| GHSL Population Exposure 4,800+ | `compiled_pop_ghsl_ts_2019_08_04.csv` | `log_exposed` feature (excluded from equity scoring) |
+| Aqueduct Country Risk 250+ | `aqueductcountrydata.csv` | Baseline country-level water risk |
 | IBTrACS-style typhoon tracks | `data/typhoon/` | Wind, pressure, storm speed features |
-| NASA Global Landslide Catalog | `data/landslide/` | Landslide events and locations |
-| GHSL compiled population | `compiled_pop_ghsl_ts_2019_08_04.csv` | `log_exposed` feature (excluded from equity scoring) |
 | GFD return period summaries | `gfd_popsummary.csv` | `rp10_risk`, `rp100_risk` features |
-| GFD validation points | `gfd_validation_points_2018_12_17.csv` | `mean_MNDWI`, `mean_NDVI`, `flood_pixel_frac` |
-| Aqueduct country risk | `aqueductcountrydata.csv` | Baseline country-level water risk |
 
 All datasets are open-access (Creative Commons / public domain). No personally identifiable information is used.
 
