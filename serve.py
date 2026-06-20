@@ -179,8 +179,20 @@ def run_prediction(M, body: Dict[str, Any]) -> Dict[str, Any]:
         lat, lon = extract_latlon(node)
         if lat is None or lon is None:
             continue
-        rain = fetch_rainfall(lat, lon)
-        terr = fetch_terrain(lat, lon)
+        # Simulation / sensor override: if the caller supplies rainfall or terrain
+        # values, use them instead of the live Open-Meteo fetch (lets a typhoon
+        # simulator or real LoRaWAN sensors inject conditions on demand).
+        rain_keys = ["rain_1d", "rain_3d", "rain_7d", "rain_30d", "rain_max3", "rain_api"]
+        if any(k in node for k in rain_keys):
+            rain = {k: float(node.get(k, 0.0)) for k in rain_keys}
+        else:
+            rain = fetch_rainfall(lat, lon)
+        if any(k in node for k in ("elev", "slope_deg", "relief")):
+            terr = {"elev": float(node.get("elev", 0.0)),
+                    "slope_deg": float(node.get("slope_deg", 0.5)),
+                    "relief": float(node.get("relief", 10.0))}
+        else:
+            terr = fetch_terrain(lat, lon)
         x = _build_feature_vector(M, lat, lon, month, rain, terr, PH_RP10, PH_RP100)
         xs = (x.reshape(1, -1) - M["mean"]) / M["scale"]
         with torch.no_grad():
