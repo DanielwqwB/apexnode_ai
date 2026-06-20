@@ -144,6 +144,21 @@ def _alert_level(p: float, thr: float) -> str:
             "MODERATE" if p >= 0.45 else "LOW" if p >= thr else "SAFE")
 
 
+def equity_score(p: float, rain: Dict[str, float], terr: Dict[str, float],
+                 rp100: float) -> float:
+    """Equity-First rescue priority — THREAT factors only, NO socioeconomic input.
+
+    Population / wealth / exposure are deliberately excluded so a poor low-lying
+    barangay with rising water outranks a wealthy low-risk area. All terms are
+    objective hazard signals, normalised to [0, 1].
+    """
+    rainfall_intensity = min(rain.get("rain_7d", 0.0) / 200.0, 1.0)
+    low_elevation = 1.0 - min(max(terr.get("elev", 0.0), 0.0), 500.0) / 500.0
+    rp = min(max(rp100, 0.0), 1.0)
+    return (0.55 * p + 0.20 * rainfall_intensity
+            + 0.15 * low_elevation + 0.10 * rp)
+
+
 def _build_feature_vector(M, lat, lon, month, rain, terr, rp10, rp100):
     vals = {**rain, **terr, "lat": lat, "lon": lon,
             "month_sin": math.sin(2 * math.pi * month / 12),
@@ -170,14 +185,17 @@ def run_prediction(M, body: Dict[str, Any]) -> Dict[str, Any]:
         xs = (x.reshape(1, -1) - M["mean"]) / M["scale"]
         with torch.no_grad():
             p = float(torch.sigmoid(M["model"](torch.from_numpy(xs.astype(np.float32)))).item())
+        equity = equity_score(p, rain, terr, PH_RP100)
         rows.append({"node_id": node.get("node_id", i), "lat": lat, "lon": lon,
                      "event_prob": round(p, 4), "probability": round(p, 4),
                      "severity": round(p, 4), "alert": p >= M["thr"],
                      "alert_level": _alert_level(p, M["thr"]),
+                     "equity_score": round(equity, 4),
                      "rainfall": {k: round(v, 1) for k, v in rain.items()},
                      "elevation": round(terr["elev"], 1)})
 
-    rows.sort(key=lambda r: r["event_prob"], reverse=True)
+    # Equity-first: rank by threat-only equity score (NO socioeconomic input)
+    rows.sort(key=lambda r: r["equity_score"], reverse=True)
     for rank, r in enumerate(rows, 1):
         r["rescue_rank"] = rank
     return {"threshold": round(M["thr"], 3), "total_nodes": len(rows),
