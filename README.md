@@ -219,6 +219,30 @@ SentryMesh is built on the principle that AI amplifies human capacity but never 
 
 All datasets are open-access (Creative Commons / public domain). No personally identifiable information is used.
 
+### Feature Selection & Anti-Leakage Policy (Flood Susceptibility)
+
+The flood-susceptibility model predicts flood **occurrence** from conditions that
+exist **independently of, and prior to, the flood**, so the same features can be
+computed for both flood events (positives) and random no-flood points (negatives).
+We deliberately **exclude flood-outcome variables** to prevent target leakage:
+
+| Used (leakage-free predictors) | Excluded (flood-outcome / leakage) |
+|---|---|
+| Antecedent rainfall (NASA POWER, 1–30 day) | `MNDWI`, `NDVI`, `flood_pixel_frac`, bands B1–B7 — *satellite measurements of the flood water itself* |
+| Terrain: elevation, slope, local relief | Exposed population, `Dead`, `Displaced`, `Severity` — *only known after a flood* |
+| Season (cyclical month), location | |
+| Aqueduct return-period risk (`rp10`/`rp100`, country-level static prior) | |
+
+> Outcome variables only exist for positives — a dry location has no
+> `flood_pixel_frac`. Including them would let the model "detect" a flood from its
+> own signature rather than predict it, producing inflated metrics that collapse on
+> unseen data. They remain in `data/` because the ST-GNN consumes them; they are
+> intentionally **not** features of the susceptibility model.
+
+Positives: 318 coordinate-accurate ASEAN flood events (Dartmouth Flood Observatory
+masterlist + coordinate-tagged EM-DAT + GFD QC database). Province-centroid
+geocoded events were tested and **dropped** — coarse centroids added label noise.
+
 ---
 
 ## API Reference

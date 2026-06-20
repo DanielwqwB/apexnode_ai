@@ -5,13 +5,19 @@ Trains on data/flood_susceptibility.parquet from build_flood_susceptibility.py.
 Uses CUDA automatically when available.
 """
 
+import os
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+# Import torch BEFORE numpy/sklearn — on this Windows env, loading numpy's OpenMP
+# first breaks torch's c10.dll init (WinError 1114).
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+
 import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn as nn
 from sklearn.metrics import (
     average_precision_score,
     classification_report,
@@ -22,12 +28,13 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from torch.utils.data import DataLoader, TensorDataset
 
 
 FEAT = [
     "rain_1d", "rain_3d", "rain_7d", "rain_30d", "rain_max3", "rain_api",
     "elev", "slope_deg", "relief", "lat", "lon", "month_sin", "month_cos",
+    # Static, leakage-free flood-hazard prior (Aqueduct return-period risk)
+    "rp10_risk", "rp100_risk",
 ]
 
 CFG = {
@@ -139,7 +146,7 @@ def main():
     if torch.cuda.is_available():
         print(f"gpu: {torch.cuda.get_device_name(0)}")
 
-    x = df[FEAT].fillna(0.0).to_numpy(np.float32)
+    x = df.reindex(columns=FEAT).fillna(0.0).to_numpy(np.float32)
     y = df["label"].to_numpy(np.float32)
     x_tr, x_tmp, y_tr, y_tmp = train_test_split(x, y, test_size=0.30, stratify=y, random_state=42)
     x_val, x_te, y_val, y_te = train_test_split(x_tmp, y_tmp, test_size=0.50, stratify=y_tmp, random_state=42)

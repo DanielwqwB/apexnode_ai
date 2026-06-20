@@ -32,7 +32,8 @@ from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
 FEAT = ["rain_1d", "rain_3d", "rain_7d", "rain_30d", "rain_max3", "rain_api",
-        "elev", "slope_deg", "relief", "lat", "lon", "month_sin", "month_cos"]
+        "elev", "slope_deg", "relief", "lat", "lon", "month_sin", "month_cos",
+        "rp10_risk", "rp100_risk"]   # rp* present only in flood parquet; landslide -> 0
 
 CFG = {
     "epochs": 400, "batch_size": 256, "lr": 1e-3, "weight_decay": 1e-4,
@@ -128,7 +129,7 @@ def run(name, parquet, pos_label, neg_label, tag):
     df = pd.read_parquet(path)
     print(f"rows: {len(df)}  pos: {int(df['label'].sum())}  neg: {int((df['label']==0).sum())}  | device: {CFG['device']}")
 
-    x = df[FEAT].fillna(0.0).to_numpy(np.float32)
+    x = df.reindex(columns=FEAT).fillna(0.0).to_numpy(np.float32)   # missing cols (e.g. rp* in landslide) -> 0
     y = df["label"].to_numpy(np.float32)
     x_tr, x_tmp, y_tr, y_tmp = train_test_split(x, y, test_size=0.30, stratify=y, random_state=42)
     x_val, x_te, y_val, y_te = train_test_split(x_tmp, y_tmp, test_size=0.50, stratify=y_tmp, random_state=42)

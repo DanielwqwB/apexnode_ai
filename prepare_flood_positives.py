@@ -77,6 +77,19 @@ def load_emdat() -> pd.DataFrame:
     return out
 
 
+def load_geocoded() -> pd.DataFrame:
+    """EM-DAT events geocoded to province centroids (built by geocode_emdat_positives.py)."""
+    p = DATA_ROOT / "flood_positives_emdat_geocoded.csv"
+    if not p.exists():
+        print("  GEO:    (none — run geocode_emdat_positives.py first)")
+        return pd.DataFrame(columns=["lat", "lon", "date", "source"])
+    g = pd.read_csv(p, parse_dates=["date"])
+    out = g[["lat", "lon", "date"]].copy()
+    out["source"] = "EMDAT_GEO"
+    print(f"  GEO:    {len(out)} geocoded EM-DAT events")
+    return out
+
+
 def load_gfd() -> pd.DataFrame:
     df = pd.read_csv(GFD_CSV, parse_dates=["Began"])
     df = df[df["Country"].isin(ASEAN_EXACT)]
@@ -93,7 +106,7 @@ def load_gfd() -> pd.DataFrame:
 def main():
     print("Loading flood positives from 3 sources …")
     frames = []
-    for loader in (load_dfo, load_emdat, load_gfd):
+    for loader in (load_dfo, load_emdat, load_gfd, load_geocoded):
         try:
             frames.append(loader())
         except Exception as e:
@@ -111,7 +124,7 @@ def main():
     allp["_klon"] = (allp["lon"] / 0.25).round() * 0.25
     allp["_kym"]  = allp["date"].dt.to_period("M").astype(str)
     # Prefer DFO > GFD > EMDAT when collapsing duplicates (DFO has best centroids)
-    pri = {"DFO": 0, "GFD": 1, "EMDAT": 2}
+    pri = {"DFO": 0, "GFD": 1, "EMDAT": 2, "EMDAT_GEO": 3}
     allp["_pri"] = allp["source"].map(pri)
     allp = allp.sort_values("_pri").drop_duplicates(subset=["_klat", "_klon", "_kym"])
 

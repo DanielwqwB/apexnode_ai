@@ -5,13 +5,19 @@ Trains on data/susceptibility.parquet from build_susceptibility.py.
 Uses CUDA automatically when available.
 """
 
+import os
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+# Import torch BEFORE numpy/sklearn — on this Windows env, loading numpy's OpenMP
+# first breaks torch's c10.dll init (WinError 1114).
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+
 import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn as nn
 from sklearn.metrics import (
     average_precision_score,
     classification_report,
@@ -22,7 +28,6 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from torch.utils.data import DataLoader, TensorDataset
 
 
 FEAT = [
