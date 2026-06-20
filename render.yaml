@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: sentrymesh-vigilantpath-api
+    name: apexnode-ai
     runtime: python
     plan: free
     # Models are pre-trained and committed under checkpoints/ — do NOT retrain on deploy.
