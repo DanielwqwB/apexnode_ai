@@ -3,7 +3,8 @@ services:
     name: sentrymesh-vigilantpath-api
     runtime: python
     plan: free
-    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt && python run_training.py"
+    # Models are pre-trained and committed under checkpoints/ — do NOT retrain on deploy.
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "uvicorn serve:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /
     envVars:

@@ -1,8 +1,7 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-numpy==1.26.4
+numpy>=2.0,<2.3
 pandas==2.2.3
 pyarrow==18.1.0
 scikit-learn==1.5.2
 torch>=2.3.1
-torch-geometric==2.5.3
