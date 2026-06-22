@@ -1,0 +1,5 @@
+Allocation tier,Mean churn,Max displacement (ranks),Set retention,Audit verdict
+Top-10,46.8%,30,53.2%,monitor
+Top-25,30.7%,76,69.3%,monitor
+Top-50,15.7%,149,84.3%,monitor
+Top-100,20.6%,368,79.4%,monitor

@@ -1,0 +1,5 @@
+Income bracket,n,Selection rate,Equal-opp (TPR),Disparate-impact ratio,4/5ths rule
+Q1 (lowest),239,0.209,0.857,0.67,review
+Q2,238,0.315,0.948,1.01,pass ✓
+Q3,238,0.303,0.923,0.97,pass ✓
+Q4 (highest),239,0.423,0.916,1.35,review

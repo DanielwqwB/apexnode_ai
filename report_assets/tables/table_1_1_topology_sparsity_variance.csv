@@ -1,0 +1,11 @@
+Topology / feature metric,Value,Optimisation target,Outcome
+Nodes (mesh cells),483,—,graph order |V|
+Directed edges,"6,408",—,graph size |E|
+Graph density,0.0275,< 0.05 (sparse),sparse ✓
+Mean out-degree,13.27,8–16 band,in-band ✓
+Out-degree std-dev,4.24,—,heterogeneity
+Max out-degree,16,—,hub cell
+Isolated nodes,4,minimise,near-connected
+Node feature dim,36,—,per time-step
+Features retained (var > 0.01),35,var > 0.01,kept
+Near-constant pruned (var ≤ 0.01),1,var ≤ 0.01,dropped

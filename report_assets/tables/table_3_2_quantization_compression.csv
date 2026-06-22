@@ -1,0 +1,5 @@
+Quantisation scheme,Model size,Compression,Rel. latency,ROC-AUC,Deployment
+FP32 (baseline),1.22 MB,1.0×,1.00×,0.962,server
+FP16,0.61 MB,2.0×,0.62×,0.960,edge-ready ✓
+INT8 (dyn.),0.31 MB,4.0×,0.41×,0.956,edge-ready ✓
+INT8 + prune 30%,0.21 MB,5.7×,0.33×,0.951,edge-ready ✓

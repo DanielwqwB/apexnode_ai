@@ -1,0 +1,7 @@
+Ingestion perturbation,Spearman ρ (mean),ρ std-dev,Top-50 retention,Stability verdict
+±2%,0.969,0.003,93%,stable ✓
+±5%,0.941,0.004,89%,stable ✓
+±10%,0.910,0.005,85%,stable ✓
+±15%,0.885,0.008,82%,moderate
+±20%,0.864,0.008,81%,moderate
+±30%,0.820,0.011,73%,moderate

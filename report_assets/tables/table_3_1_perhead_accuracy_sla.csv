@@ -1,0 +1,4 @@
+Prediction head,Precision,Recall,F1,ROC-AUC,SLA target,SLA status
+Flood susceptibility,0.565,0.812,0.667,0.807,≥ 0.80 AUC,pass ✓
+Landslide susceptibility,0.880,0.934,0.906,0.964,≥ 0.85 AUC,pass ✓
+ST-GNN multi-hazard event,0.876,0.848,0.862,0.962,≥ 0.90 AUC,pass ✓
